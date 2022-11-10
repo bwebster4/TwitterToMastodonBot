@@ -32,7 +32,7 @@ object Main extends App {
   val mastodonPassword: String = config.getString("mastodon.password")
 
   val apiInstance = new TwitterApi(new TwitterCredentialsBearer(bearerToken))
-  val ruleNoId = new RuleNoId().value(userNames.map("from:" + _).mkString(" OR ") + " -is:retweet -is:reply -is:quote")
+  val ruleNoId = new RuleNoId().value(s"(${userNames.map("from:" + _).mkString(" OR ")}) -is:retweet -is:reply -is:quote")
   val addRule = new AddRulesRequest().addAddItem(ruleNoId)
   val addRulesRequest = new AddOrDeleteRulesRequest(addRule)
 
