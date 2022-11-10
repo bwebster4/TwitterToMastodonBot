@@ -4,7 +4,7 @@ import akka.actor.ActorSystem
 import com.google.common.reflect.TypeToken
 import com.twitter.clientlib.{JSON, TwitterCredentialsBearer, TwitterCredentialsOAuth2}
 import com.twitter.clientlib.api.TwitterApi
-import com.twitter.clientlib.model.{AddOrDeleteRulesRequest, AddRulesRequest, FilteredStreamingTweetResponse, RuleNoId}
+import com.twitter.clientlib.model.{AddOrDeleteRulesRequest, AddRulesRequest, DeleteRulesRequest, DeleteRulesRequestDelete, FilteredStreamingTweetResponse, RuleNoId}
 import com.typesafe.config.ConfigFactory
 import de.sciss.scaladon.{Mastodon, Visibility}
 import org.slf4j.{Logger, LoggerFactory}
@@ -14,7 +14,7 @@ import java.lang.reflect.Type
 import java.util
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContext, Future}
-import scala.jdk.CollectionConverters.ListHasAsScala
+import scala.jdk.CollectionConverters.{ListHasAsScala, SeqHasAsJava}
 import scala.util.Try
 
 object Main extends App {
@@ -41,6 +41,9 @@ object Main extends App {
   val expansions = new util.HashSet[String](util.Arrays.asList("author_id"))
 
   val program = for {
+    oldRules <- Future(apiInstance.tweets().getRules.execute()).logError()
+    deleteRulesRequest = new DeleteRulesRequest().delete(new DeleteRulesRequestDelete().ids(oldRules.getData.asScala.map(_.getId).asJava))
+    _ <- Future(apiInstance.tweets().addOrDeleteRules(new AddOrDeleteRulesRequest(deleteRulesRequest)).execute()).logError()
     _ <- Future(apiInstance.tweets().addOrDeleteRules(addRulesRequest).execute()).logError()
     stream <- Future(apiInstance.tweets().searchStream()
       .tweetFields(tweetFields).userFields(userFields).expansions(expansions).execute()).logError()
