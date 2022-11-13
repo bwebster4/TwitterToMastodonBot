@@ -17,22 +17,36 @@ import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.jdk.CollectionConverters.{ListHasAsScala, SeqHasAsJava}
 import scala.util.Try
 
+case class MastodonCredentials(username: String, password: String)
+
 object Main extends App {
   val config = ConfigFactory.load()
   implicit val executionContext = ExecutionContext.global
   implicit val logger: Logger = LoggerFactory.getLogger("Main")
   implicit val system: ActorSystem = ActorSystem()
 
-  val userNames: Seq[String] = config.getStringList("twitter.followUsers").asScala.toSeq
   val bearerToken: String = config.getString("twitter.bearer")
 
   val mastodonBaseUrl: String = config.getString("mastodon.baseUrl")
   val mastodonAppName: String = config.getString("mastodon.applicationName")
-  val mastodonUsername: String = config.getString("mastodon.username")
-  val mastodonPassword: String = config.getString("mastodon.password")
+
+  val followsToPosters: Map[String, MastodonCredentials] = if(config.hasPath("multiAccount")){
+    val multiAccount = config.getConfigList("multiAccount").asScala.toSeq
+    multiAccount.map{config =>
+      val follow = config.getString("follow")
+      val username = config.getString("mastodonUsername")
+      val password = config.getString("mastodonPassword")
+      (follow -> MastodonCredentials(username, password))
+    }.toMap
+  } else {
+    val userNames: Seq[String] = config.getStringList("twitter.followUsers").asScala.toSeq
+    val mastodonUsername: String = config.getString("mastodon.username")
+    val mastodonPassword: String = config.getString("mastodon.password")
+    userNames.map(username => username -> MastodonCredentials(mastodonUsername, mastodonPassword)).toMap
+  }
 
   val apiInstance = new TwitterApi(new TwitterCredentialsBearer(bearerToken))
-  val ruleNoId = new RuleNoId().value(s"(${userNames.map("from:" + _).mkString(" OR ")}) -is:retweet -is:reply -is:quote")
+  val ruleNoId = new RuleNoId().value(s"(${followsToPosters.keys.map("from:" + _).mkString(" OR ")}) -is:retweet -is:reply -is:quote")
   val addRule = new AddRulesRequest().addAddItem(ruleNoId)
   val addRulesRequest = new AddOrDeleteRulesRequest(addRule)
 
@@ -48,7 +62,9 @@ object Main extends App {
     stream <- Future(apiInstance.tweets().searchStream()
       .tweetFields(tweetFields).userFields(userFields).expansions(expansions).execute()).logError()
     app <- Mastodon.createApp(mastodonBaseUrl, mastodonAppName)
-    token <- app.login(mastodonUsername, mastodonPassword)
+    usernameToTokens <- Future.traverse(followsToPosters.map{ case (follow: String, credentials: MastodonCredentials) =>
+      (follow, app.login(credentials.username, credentials.password))
+    }.toList){case (k, fv) => fv.map(k -> _)}.map(_.toMap)
   } yield {
     val localVarReturnType = new TypeToken[FilteredStreamingTweetResponse](){}.getType
 
@@ -59,7 +75,9 @@ object Main extends App {
         val jsonObject: FilteredStreamingTweetResponse = JSON.getGson.fromJson(line, localVarReturnType)
         val text = jsonObject.getData.getText
         val username = Option(jsonObject.getIncludes.getUsers.get(0)).map(_.getUsername).getOrElse("Unknown")
-        app.toot(s"@$username: $text", Visibility.Public)(token).logError("Failed to toot")
+        usernameToTokens.get(username).map{token =>
+          app.toot(s"@$username: $text", Visibility.Unlisted)(token).logError("Failed to toot")
+        }
       }
       line = reader.readLine()
     }
