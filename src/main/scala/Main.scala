@@ -72,11 +72,12 @@ object Main extends App {
     var line = reader.readLine()
     while(line != null){
       if(line.nonEmpty){
-        val jsonObject: FilteredStreamingTweetResponse = JSON.getGson.fromJson(line, localVarReturnType)
-        val text = jsonObject.getData.getText
-        val username = Option(jsonObject.getIncludes.getUsers.get(0)).map(_.getUsername).getOrElse("Unknown")
-        usernameToTokens.get(username).map{token =>
-          app.toot(s"@$username: $text", Visibility.Unlisted)(token).logError("Failed to toot")
+        Option(JSON.getGson.fromJson(line, localVarReturnType)).foreach{jsonObject: FilteredStreamingTweetResponse =>
+          val text = jsonObject.getData.getText
+          val username = Option(jsonObject.getIncludes.getUsers.get(0)).map(_.getUsername).getOrElse("Unknown")
+          usernameToTokens.get(username).map{token =>
+            app.toot(s"@$username: $text", Visibility.Unlisted)(token).logError("Failed to toot")
+          }
         }
       }
       line = reader.readLine()
