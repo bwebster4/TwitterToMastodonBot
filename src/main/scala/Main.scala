@@ -4,7 +4,7 @@ import akka.actor.ActorSystem
 import com.google.common.reflect.TypeToken
 import com.twitter.clientlib.{JSON, TwitterCredentialsBearer, TwitterCredentialsOAuth2}
 import com.twitter.clientlib.api.TwitterApi
-import com.twitter.clientlib.model.{AddOrDeleteRulesRequest, AddRulesRequest, DeleteRulesRequest, DeleteRulesRequestDelete, FilteredStreamingTweetResponse, RuleNoId}
+import com.twitter.clientlib.model.{AddOrDeleteRulesRequest, AddRulesRequest, DeleteRulesRequest, DeleteRulesRequestDelete, FilteredStreamingTweetResponse, RuleNoId, Tweet}
 import com.typesafe.config.ConfigFactory
 import de.sciss.scaladon.{Mastodon, Visibility}
 import org.slf4j.{Logger, LoggerFactory}
@@ -72,9 +72,12 @@ object Main extends App {
     var line = reader.readLine()
     while(line != null){
       if(line.nonEmpty){
-        Option(JSON.getGson.fromJson(line, localVarReturnType)).foreach{jsonObject: FilteredStreamingTweetResponse =>
-          val text = jsonObject.getData.getText
-          val username = Option(jsonObject.getIncludes.getUsers.get(0)).map(_.getUsername).getOrElse("Unknown")
+        for {
+          jsonObject <- Option(JSON.getGson.fromJson[FilteredStreamingTweetResponse](line, localVarReturnType))
+          data <- Option(jsonObject.getData)
+          text = data.getText
+          username <- Option(jsonObject.getIncludes.getUsers.get(0)).map(_.getUsername)
+        }yield {
           usernameToTokens.get(username).map{token =>
             app.toot(s"@$username: $text", Visibility.Unlisted)(token).logError("Failed to toot")
           }
