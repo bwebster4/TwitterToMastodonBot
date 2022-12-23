@@ -56,12 +56,12 @@ object Main extends App {
 
   val program = for {
     oldRules <- Future(apiInstance.tweets().getRules.execute()).logError()
-    deleteRulesRequest = new DeleteRulesRequest().delete(new DeleteRulesRequestDelete().ids(oldRules.getData.asScala.map(_.getId).asJava))
+    deleteRulesRequest <- Future(new DeleteRulesRequest().delete(new DeleteRulesRequestDelete().ids(oldRules.getData.asScala.map(_.getId).asJava))).logError()
     _ <- Future(apiInstance.tweets().addOrDeleteRules(new AddOrDeleteRulesRequest(deleteRulesRequest)).execute()).logError()
     _ <- Future(apiInstance.tweets().addOrDeleteRules(addRulesRequest).execute()).logError()
     stream <- Future(apiInstance.tweets().searchStream()
       .tweetFields(tweetFields).userFields(userFields).expansions(expansions).execute()).logError()
-    app <- Mastodon.createApp(mastodonBaseUrl, mastodonAppName)
+    app <- Mastodon.createApp(mastodonBaseUrl, mastodonAppName).logError()
     usernameToTokens <- Future.traverse(followsToPosters.map{ case (follow: String, credentials: MastodonCredentials) =>
       (follow, app.login(credentials.username, credentials.password))
     }.toList){case (k, fv) => fv.map(k -> _)}.map(_.toMap)
@@ -72,12 +72,14 @@ object Main extends App {
     var line = reader.readLine()
     while(line != null){
       if(line.nonEmpty){
+        logger.info(s"Received line: $line")
         for {
           jsonObject <- Option(JSON.getGson.fromJson[FilteredStreamingTweetResponse](line, localVarReturnType))
           data <- Option(jsonObject.getData)
           text = data.getText
           username <- Option(jsonObject.getIncludes.getUsers.get(0)).map(_.getUsername)
-        }yield {
+        } yield {
+          logger.info(s"Retooting: $text")
           usernameToTokens.get(username).map{token =>
             app.toot(s"@$username: $text", Visibility.Unlisted)(token).logError("Failed to toot")
           }
