@@ -10,12 +10,11 @@ import de.sciss.scaladon.{Mastodon, Visibility}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.io.{BufferedReader, InputStreamReader}
-import java.lang.reflect.Type
 import java.util
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.jdk.CollectionConverters.{ListHasAsScala, SeqHasAsJava}
-import scala.util.Try
+import scala.util.{Failure, Success, Try}
 
 case class MastodonCredentials(username: String, password: String)
 
@@ -54,41 +53,53 @@ object Main extends App {
   val userFields = new util.HashSet[String](util.Arrays.asList("username"))
   val expansions = new util.HashSet[String](util.Arrays.asList("author_id"))
 
-  val program = for {
-    oldRules <- Future(apiInstance.tweets().getRules.execute()).logError()
-    deleteRulesRequest <- Future(new DeleteRulesRequest().delete(new DeleteRulesRequestDelete().ids(oldRules.getData.asScala.map(_.getId).asJava))).logError()
-    _ <- Future(apiInstance.tweets().addOrDeleteRules(new AddOrDeleteRulesRequest(deleteRulesRequest)).execute()).logError()
-    _ <- Future(apiInstance.tweets().addOrDeleteRules(addRulesRequest).execute()).logError()
-    stream <- Future(apiInstance.tweets().searchStream()
-      .tweetFields(tweetFields).userFields(userFields).expansions(expansions).execute()).logError()
-    app <- Mastodon.createApp(mastodonBaseUrl, mastodonAppName).logError()
-    usernameToTokens <- Future.traverse(followsToPosters.map{ case (follow: String, credentials: MastodonCredentials) =>
-      (follow, app.login(credentials.username, credentials.password))
-    }.toList){case (k, fv) => fv.map(k -> _)}.map(_.toMap)
-  } yield {
-    val localVarReturnType = new TypeToken[FilteredStreamingTweetResponse](){}.getType
+  /**
+   * Runs until the stream is reset by the remote, then recursively calls itself to keep running
+   * @return a Future representing the indefinite stream processing
+   */
+  def program(): Future[Unit] = {
+    val processing = for {
+      oldRules <- Future(apiInstance.tweets().getRules.execute()).logError()
+      deleteRulesRequest <- Future(new DeleteRulesRequest().delete(new DeleteRulesRequestDelete().ids(oldRules.getData.asScala.map(_.getId).asJava))).logError()
+      _ <- Future(apiInstance.tweets().addOrDeleteRules(new AddOrDeleteRulesRequest(deleteRulesRequest)).execute()).logError()
+      _ <- Future(apiInstance.tweets().addOrDeleteRules(addRulesRequest).execute()).logError()
+      stream <- Future(apiInstance.tweets().searchStream()
+        .tweetFields(tweetFields).userFields(userFields).expansions(expansions).execute()).logError()
+      app <- Mastodon.createApp(mastodonBaseUrl, mastodonAppName).logError()
+      usernameToTokens <- Future.traverse(followsToPosters.map{ case (follow: String, credentials: MastodonCredentials) =>
+        (follow, app.login(credentials.username, credentials.password))
+      }.toList){case (k, fv) => fv.map(k -> _)}.map(_.toMap)
+      _ <- Future {
+        val localVarReturnType = new TypeToken[FilteredStreamingTweetResponse](){}.getType
 
-    val reader = new BufferedReader(new InputStreamReader(stream))
-    var line = reader.readLine()
-    while(line != null){
-      if(line.nonEmpty){
-        logger.info(s"Received line: $line")
-        for {
-          jsonObject <- Option(JSON.getGson.fromJson[FilteredStreamingTweetResponse](line, localVarReturnType))
-          data <- Option(jsonObject.getData)
-          text = data.getText
-          username <- Option(jsonObject.getIncludes.getUsers.get(0)).map(_.getUsername)
-        } yield {
-          logger.info(s"Retooting: $text")
-          usernameToTokens.get(username).map{token =>
-            app.toot(s"@$username: $text", Visibility.Unlisted)(token).logError("Failed to toot")
+        val reader = new BufferedReader(new InputStreamReader(stream))
+        var line = reader.readLine()
+        while(line != null){
+          if(line.nonEmpty){
+            logger.info(s"Received line: $line")
+            for {
+              jsonObject <- Option(JSON.getGson.fromJson[FilteredStreamingTweetResponse](line, localVarReturnType))
+              data <- Option(jsonObject.getData)
+              text = data.getText
+              username <- Option(jsonObject.getIncludes.getUsers.get(0)).map(_.getUsername)
+            } yield {
+              logger.info(s"Retooting: $text")
+              usernameToTokens.get(username).map{token =>
+                app.toot(s"@$username: $text", Visibility.Unlisted)(token).logError("Failed to toot")
+              }
+            }
           }
+          line = Try(reader.readLine()).getOrElse(null)
         }
       }
-      line = reader.readLine()
+    } yield ()
+
+    processing.andThen {
+      case Failure(exception) => logger.error("Program failed with exception", exception)
+      case Success(value) => program()
     }
   }
 
-  Await.result(program, Duration.Inf)
+  Await.result(program(), Duration.Inf)
 }
 
